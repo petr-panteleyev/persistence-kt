@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE suite SYSTEM "http://testng.org/testng-1.0.dtd">
+<suite name="Default Suite">
+  <test name="persistence-kotlin">
+    <classes>
+      <class name="org.panteleyev.persistence.test.TestForeignKeyMySQL"/>
+      <class name="org.panteleyev.persistence.test.TestForeignKeySQLite"/>
+      <class name="org.panteleyev.persistence.test.TestRecordsMySQL"/>
+      <class name="org.panteleyev.persistence.test.TestRecordsSQLite"/>
+      <class name="org.panteleyev.persistence.test.TestTableCreationMySQL"/>
+      <class name="org.panteleyev.persistence.test.TestTableCreationSQLite"/>
+    </classes>
+  </test>
+</suite>

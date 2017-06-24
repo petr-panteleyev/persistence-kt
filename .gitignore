@@ -1,0 +1,15 @@
+build
+.DS_Store
+/repo/
+*~
+**/private
+
+dependency-reduced-pom.xml
+
+/target/
+
+nbactions.xml
+*.iml
+.idea
+
+nb-configuration.xml
