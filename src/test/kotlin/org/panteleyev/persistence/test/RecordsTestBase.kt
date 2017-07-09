@@ -195,6 +195,45 @@ open class RecordsTestBase : Base() {
         Assert.assertEquals(retrieved.size, records.size)
     }
 
+    @Test
+    fun testTruncate() {
+        val classes = listOf(RecordWithAllTypes::class, RecordWithPrimitives::class)
+
+        dao.createTables(classes)
+        dao.preload(classes)
+
+        val l1 = listOf(
+                RecordWithAllTypes.newRecord(dao.generatePrimaryKey(RecordWithAllTypes::class), RANDOM),
+                RecordWithAllTypes.newRecord(dao.generatePrimaryKey(RecordWithAllTypes::class), RANDOM),
+                RecordWithAllTypes.newRecord(dao.generatePrimaryKey(RecordWithAllTypes::class), RANDOM),
+                RecordWithAllTypes.newRecord(dao.generatePrimaryKey(RecordWithAllTypes::class), RANDOM),
+                RecordWithAllTypes.newRecord(dao.generatePrimaryKey(RecordWithAllTypes::class), RANDOM)
+        )
+
+        val l2 = listOf(
+                RecordWithPrimitives.newRecord(dao.generatePrimaryKey(RecordWithPrimitives::class), RANDOM),
+                RecordWithPrimitives.newRecord(dao.generatePrimaryKey(RecordWithPrimitives::class), RANDOM),
+                RecordWithPrimitives.newRecord(dao.generatePrimaryKey(RecordWithPrimitives::class), RANDOM)
+        )
+
+        dao.insert(l1.size, l1)
+        dao.insert(l2.size, l2)
+
+        Assert.assertEquals(dao.getAll(RecordWithAllTypes::class).size, 5)
+        Assert.assertEquals(dao.getAll(RecordWithPrimitives::class).size, 3)
+
+        Assert.assertNotEquals(dao.generatePrimaryKey(RecordWithAllTypes::class), 1)
+        Assert.assertNotEquals(dao.generatePrimaryKey(RecordWithPrimitives::class), 1)
+
+        dao.truncate(classes)
+
+        Assert.assertEquals(dao.getAll(RecordWithAllTypes::class).size, 0)
+        Assert.assertEquals(dao.getAll(RecordWithPrimitives::class).size, 0)
+
+        Assert.assertEquals(dao.generatePrimaryKey(RecordWithAllTypes::class), 1)
+        Assert.assertEquals(dao.generatePrimaryKey(RecordWithPrimitives::class), 1)
+    }
+
     private fun <T : Record> checkCreatedRecord(clazz: KClass<T>, idMap: Map<Int, Record>, count: Int) {
         // Get all records back in one request
         val result = dao.getAll(clazz)

@@ -28,9 +28,11 @@ package org.panteleyev.persistence
 
 import org.panteleyev.persistence.annotations.Field
 import org.panteleyev.persistence.annotations.ForeignKey
+import java.sql.Connection
 import java.sql.ResultSet
 import java.sql.SQLException
 import java.util.Date
+import kotlin.reflect.KClass
 
 internal class SQLiteProxy : DAOProxy {
 
@@ -110,5 +112,12 @@ internal class SQLiteProxy : DAOProxy {
         }
 
         return b.toString()
+    }
+
+    override fun truncate(conn: Connection, classes: List<KClass<out Record>>) {
+        conn.createStatement().let { st ->
+            classes.forEach { st.execute("DELETE FROM ${it.getTableName()}") }
+            st.execute("VACUUM")
+        }
     }
 }

@@ -44,7 +44,6 @@ import java.sql.SQLException
 import java.util.ArrayList
 import java.util.Arrays
 import java.util.HashSet
-import java.util.Objects
 import java.util.concurrent.ConcurrentHashMap
 import javax.sql.DataSource
 import kotlin.reflect.KClass
@@ -57,7 +56,19 @@ interface Record {
      * ID of the record. Default implementation does not provide setter to support
      * immutable objects. Mutable records must override this property as var.
      */
-    val id : Int
+    val id: Int
+}
+
+/**
+ * Returns table name for a record class. If class is not annotated with annotation [Table] method throws
+ * [IllegalStateException].
+ */
+internal fun <T : Record> KClass<T>.getTableName(): String {
+    if (this.java.isAnnotationPresent(Table::class.java)) {
+        return this.java.getAnnotation(Table::class.java).value
+    } else {
+        throw IllegalStateException(DAO.NOT_ANNOTATED)
+    }
 }
 
 /**
@@ -67,11 +78,11 @@ interface Record {
  * @property dataSource
  * @constructor Creates new DAO object with optional data source.
  */
-open class DAO (ds: DataSource?){
-    private val primaryKeys = ConcurrentHashMap<Class<out Record>, Int>()
-    private val insertSQL = ConcurrentHashMap<Class<out Record>, String>()
-    private val updateSQL = ConcurrentHashMap<Class<out Record>, String>()
-    private val deleteSQL = ConcurrentHashMap<Class<out Record>, String>()
+open class DAO(ds: DataSource?) {
+    private val primaryKeys = ConcurrentHashMap<KClass<out Record>, Int>()
+    private val insertSQL = ConcurrentHashMap<KClass<out Record>, String>()
+    private val updateSQL = ConcurrentHashMap<KClass<out Record>, String>()
+    private val deleteSQL = ConcurrentHashMap<KClass<out Record>, String>()
 
     private var proxy: DAOProxy? = null
 
@@ -89,7 +100,6 @@ open class DAO (ds: DataSource?){
         dataSource = ds
         proxy = setupProxy()
     }
-
 
     private fun setupProxy(): DAOProxy? {
         // TODO: figure out better way instead of class name check
@@ -110,27 +120,20 @@ open class DAO (ds: DataSource?){
         }
     }
 
-    val connection: Connection
-        get() = dataSource?.connection?:throw IllegalStateException("Not initialized")
+    /**
+     * New connection returned by internal data source.
+     */
+    protected val connection: Connection
+        get() = dataSource?.connection ?: throw IllegalStateException("Not initialized")
 
     /**
      * Retrieves record from the database using record [id].
      */
     fun <T : Record> get(id: Int, clazz: KClass<out T>): T? {
-        return get(id, clazz.java)
-    }
-
-    private fun <T : Record> get(id: Int, clazz: Class<out T>): T? {
         dataSource!!.connection.use { conn ->
-            if (!clazz.isAnnotationPresent(Table::class.java)) {
-                throw IllegalStateException(NOT_ANNOTATED)
-            }
-            val ann = clazz.getAnnotation(Table::class.java)
-
-            val tableName = ann.value
             var idName = "id"
 
-            for (method in clazz.methods) {
+            for (method in clazz.java.methods) {
                 val fieldAnn = method.getAnnotation(Field::class.java)
                 if (fieldAnn != null && fieldAnn.primaryKey) {
                     idName = fieldAnn.value
@@ -138,7 +141,7 @@ open class DAO (ds: DataSource?){
                 }
             }
 
-            val sql = "SELECT * FROM $tableName WHERE $idName=?"
+            val sql = "SELECT * FROM ${clazz.getTableName()} WHERE $idName=?"
             val ps = conn.prepareStatement(sql)
             ps.setInt(1, id)
             val set = ps.executeQuery()
@@ -147,7 +150,6 @@ open class DAO (ds: DataSource?){
         }
     }
 
-
     /**
      * Retrieves all records of the specified [class][clazz].
      */
@@ -155,15 +157,10 @@ open class DAO (ds: DataSource?){
         val result = ArrayList<T>()
 
         dataSource!!.connection.use { conn ->
-            if (!clazz.java.isAnnotationPresent(Table::class.java)) {
-                throw IllegalStateException(NOT_ANNOTATED)
-            }
-
-            val tableName = clazz.java.getAnnotation(Table::class.java).value
-            val ps = conn.prepareStatement("SELECT * FROM $tableName")
+            val ps = conn.prepareStatement("SELECT * FROM ${clazz.getTableName()}")
             val set = ps.executeQuery()
             while (set.next()) {
-                result.add(fromSQL(set, clazz.java))
+                result.add(fromSQL(set, clazz))
             }
         }
 
@@ -175,29 +172,24 @@ open class DAO (ds: DataSource?){
      */
     fun <T : Record> getAll(clazz: KClass<T>, map: MutableMap<Int, T>) {
         dataSource!!.connection.use { conn ->
-            if (!clazz.java.isAnnotationPresent(Table::class.java)) {
-                throw IllegalStateException(NOT_ANNOTATED)
-            }
-
-            val tableName = clazz.java.getAnnotation(Table::class.java).value
-            val ps = conn.prepareStatement("SELECT * FROM $tableName")
+            val ps = conn.prepareStatement("SELECT * FROM ${clazz.getTableName()}")
             val set = ps.executeQuery()
             while (set.next()) {
-                val r = fromSQL(set, clazz.java)
+                val r = fromSQL(set, clazz)
                 map.put(r.id, r)
             }
         }
     }
 
-    private fun <T : Record> fromSQL(set: ResultSet, clazz: Class<T>): T {
+    private fun <T : Record> fromSQL(set: ResultSet, clazz: KClass<T>): T {
         // First try to find @RecordBuilder constructor
-        for (constructor in clazz.constructors) {
+        for (constructor in clazz.java.constructors) {
             if (constructor.isAnnotationPresent(RecordBuilder::class.java)) {
                 return fromSQL(set, constructor)
             }
         }
 
-        val result = clazz.newInstance()
+        val result = clazz.java.newInstance()
         fromSQL(set, result)
         return result
     }
@@ -268,13 +260,7 @@ open class DAO (ds: DataSource?){
                 conn.createStatement().use { st ->
                     // Step 1: drop tables in reverse order
                     for (index in tables.indices.reversed()) {
-                        val cl = tables[index]
-                        if (!cl.java.isAnnotationPresent(Table::class.java)) {
-                            throw IllegalStateException(NOT_ANNOTATED)
-                        }
-
-                        val table = cl.java.getAnnotation(Table::class.java)
-                        st.executeUpdate("DROP TABLE IF EXISTS ${table.value}")
+                        st.executeUpdate("DROP TABLE IF EXISTS ${tables[index].getTableName()}")
                     }
 
                     // Step 2: create new tables in natural order
@@ -282,7 +268,7 @@ open class DAO (ds: DataSource?){
                         val table = cl.java.getAnnotation(Table::class.java)
 
                         try {
-                            val b = StringBuilder("CREATE TABLE IF NOT EXISTS ${table.value} (")
+                            val b = StringBuilder("CREATE TABLE IF NOT EXISTS ${cl.getTableName()} (")
 
                             val bi = Introspector.getBeanInfo(cl.java)
                             val pds = bi.propertyDescriptors
@@ -345,12 +331,8 @@ open class DAO (ds: DataSource?){
     }
 
     private fun getInsertSQL(record: Record): String {
-        return insertSQL.computeIfAbsent(record.javaClass) { clazz ->
-            val b = StringBuilder("INSERT INTO ")
-
-            val table = clazz.getAnnotation(Table::class.java) ?: throw IllegalStateException("Class " + clazz.name + " is not properly annotated")
-
-            b.append(table.value).append(" (")
+        return insertSQL.computeIfAbsent(record::class) { clazz ->
+            val b = StringBuilder("INSERT INTO ${clazz.getTableName()} (")
 
             var fCount = 0
 
@@ -390,12 +372,8 @@ open class DAO (ds: DataSource?){
     }
 
     private fun getUpdateSQL(record: Record): String {
-        return updateSQL.computeIfAbsent(record.javaClass) { clazz ->
-            val b = StringBuilder("update ")
-
-            val table = clazz.getAnnotation(Table::class.java) ?: throw IllegalStateException(NOT_ANNOTATED)
-
-            b.append(table.value).append(" set ")
+        return updateSQL.computeIfAbsent(record::class) { clazz ->
+            val b = StringBuilder("UPDATE ${clazz.getTableName()} SET ")
 
             var fCount = 0
 
@@ -426,14 +404,13 @@ open class DAO (ds: DataSource?){
         }
     }
 
-    private fun getDeleteSQL(clazz: Class<out Record>): String {
+    private fun getDeleteSQL(clazz: KClass<out Record>): String {
         return deleteSQL.computeIfAbsent(clazz) { cl ->
-            val table = cl.getAnnotation(Table::class.java) ?: throw IllegalStateException(NOT_ANNOTATED)
-            val b = StringBuilder("delete from ${table.value} where ")
+            val b = StringBuilder("DELETE FROM ${cl.getTableName()} WHERE ")
 
             var idName: String? = null
 
-            val bi = Introspector.getBeanInfo(cl)
+            val bi = Introspector.getBeanInfo(cl.java)
             val pds = bi.propertyDescriptors
             for (pd in pds) {
                 val getter = pd.readMethod
@@ -458,7 +435,7 @@ open class DAO (ds: DataSource?){
     }
 
     private fun getDeleteSQL(record: Record): String {
-        return getDeleteSQL(record.javaClass)
+        return getDeleteSQL(record::class)
     }
 
     private fun setData(record: Record, st: PreparedStatement, update: Boolean) {
@@ -501,7 +478,7 @@ open class DAO (ds: DataSource?){
         return st
     }
 
-    private fun getDeleteStatement(id: Int?, clazz: Class<out Record>, conn: Connection): PreparedStatement {
+    private fun getDeleteStatement(id: Int?, clazz: KClass<out Record>, conn: Connection): PreparedStatement {
         val st = conn.prepareStatement(getDeleteSQL(clazz))
         st.setInt(1, id!!)
         return st
@@ -518,7 +495,7 @@ open class DAO (ds: DataSource?){
                 .forEach {
                     val a = it.java.getAnnotation(Table::class.java)
                     val id = getIdMaxValue(a.value)
-                    primaryKeys.put(it.java, id)
+                    primaryKeys.put(it, id)
                 }
     }
 
@@ -526,7 +503,7 @@ open class DAO (ds: DataSource?){
      * Returns next available primary key value for the specified [class][clazz]. This method is thread safe.
      */
     fun generatePrimaryKey(clazz: KClass<out Record>): Int {
-        return primaryKeys.compute(clazz.java) { _, v -> if (v == null) 1 else v + 1 }!!
+        return primaryKeys.compute(clazz) { _, v -> if (v == null) 1 else v + 1 }!!
     }
 
     private fun getIdMaxValue(tableName: String): Int {
@@ -546,12 +523,14 @@ open class DAO (ds: DataSource?){
      * new id is made. Calling code must ensure that predefined id is unique.
      */
     fun <T : Record> insert(record: T): T? {
-        Objects.requireNonNull(record.id)
+        if (record.id == 0) {
+            throw IllegalArgumentException("id == 0")
+        }
 
         dataSource!!.connection.use {
             getPreparedStatement(record, it, false).use {
                 it.executeUpdate()
-                return get(record.id, record.javaClass)
+                return get(record.id, record::class)
             }
         }
     }
@@ -594,12 +573,14 @@ open class DAO (ds: DataSource?){
      * Updates [record] in the database.
      */
     fun <T : Record> update(record: T): T? {
-        Objects.requireNonNull(record.id)
+        if (record.id == 0) {
+            throw IllegalArgumentException("id == 0")
+        }
 
         dataSource!!.connection.use {
             getPreparedStatement(record, it, true).use {
                 it.executeUpdate()
-                return get(record.id, record.javaClass)!!
+                return get(record.id, record::class)!!
             }
         }
 
@@ -609,9 +590,15 @@ open class DAO (ds: DataSource?){
      * Deletes [record] from the database.
      */
     fun delete(record: Record) {
+        if (record.id == 0) {
+            throw IllegalArgumentException("id == 0")
+        }
+
         dataSource!!.connection.use {
-            conn -> getDeleteStatement(record, conn).use {
-                ps -> ps.executeUpdate()
+            conn ->
+            getDeleteStatement(record, conn).use {
+                ps ->
+                ps.executeUpdate()
             }
         }
     }
@@ -620,14 +607,34 @@ open class DAO (ds: DataSource?){
      * Deletes record of the specified class from the database by [id].
      */
     fun delete(id: Int, clazz: KClass<out Record>) {
+        if (id == 0) {
+            throw IllegalArgumentException("id == 0")
+        }
+
         dataSource!!.connection.use {
-            conn -> getDeleteStatement(id, clazz.java, conn).use {
-                ps -> ps.executeUpdate()
+            conn ->
+            getDeleteStatement(id, clazz, conn).use {
+                ps ->
+                ps.executeUpdate()
+            }
+        }
+    }
+
+    /**
+     * Truncates tables removing all records. Primary key generation starts from 1 again. For MySQL this operation
+     * uses ```TRUNCATE TABLE table_name``` command. As SQLite does not support this command ```DELETE FROM table_name```
+     * is used instead.
+     */
+    fun truncate(classes: List<KClass<out Record>>) {
+        dataSource!!.connection.use {
+            proxy!!.truncate(it, classes)
+            for (c in classes) {
+                primaryKeys.put(c, 0)
             }
         }
     }
 
     companion object {
-        private val NOT_ANNOTATED = "Class is not properly annotated"
+        internal val NOT_ANNOTATED = "Class is not properly annotated"
     }
 }

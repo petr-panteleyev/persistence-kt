@@ -43,16 +43,20 @@ import org.panteleyev.persistence.annotations.ReferenceOption
 import org.panteleyev.persistence.annotations.Table
 import java.lang.reflect.Method
 import java.math.BigDecimal
+import java.sql.Connection
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.Types
 import java.util.Date
 import java.util.Objects
+import kotlin.reflect.KClass
 
 internal interface DAOProxy {
     fun getFieldValue(fieldName: String, typeClass: Class<*>, set: ResultSet): Any?
 
     fun getColumnString(fld: Field, foreignKey: ForeignKey?, typeName: String, constraints: MutableList<String>): String
+
+    fun truncate(conn: Connection, classes: List<KClass<out Record>>)
 
     fun setFieldData(st: PreparedStatement, index: Int, value: Any?, typeName: String) {
         when (typeName) {

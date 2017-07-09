@@ -1,4 +1,4 @@
-# module persistence-kotlin
+# module persistence-kt
 
 Persistence library provides annotation classes for database access.
 

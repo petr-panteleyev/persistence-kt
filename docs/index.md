@@ -10,7 +10,3 @@ which makes them mutually exclusive in class path.
 ### Releases
 
 https://oss.sonatype.org/content/repositories/releases/org/panteleyev/persistence-kt/
-
-### API Documentation
-
-https://petr-panteleyev.github.io/persistence-kt/persistence-kt
