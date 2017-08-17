@@ -327,7 +327,19 @@ open class DAO(ds: DataSource?) {
         } catch (ex: SQLException) {
             throw RuntimeException(ex)
         }
+    }
 
+    /**
+     * Drops [specified classes][tables] according to their annotations.
+     */
+    fun dropTables(tables: List<KClass<out Record>>) {
+        connection.use { conn ->
+            conn.createStatement().use { st ->
+                tables.forEach {
+                    st.execute("DROP TABLE ${it.getTableName()}")
+                }
+            }
+        }
     }
 
     private fun getInsertSQL(record: Record): String {
@@ -490,13 +502,14 @@ open class DAO(ds: DataSource?) {
      * incorrectly.
      */
     fun preload(tables: Collection<KClass<out Record>>) {
-        // load primary key max values
-        tables.filter { it.java.isAnnotationPresent(Table::class.java) }
-                .forEach {
-                    val a = it.java.getAnnotation(Table::class.java)
-                    val id = getIdMaxValue(a.value)
-                    primaryKeys.put(it, id)
-                }
+        dataSource!!.connection.use { conn ->
+            // load primary key max values
+            tables.filter { it.java.isAnnotationPresent(Table::class.java) }
+                    .forEach {
+                        val id = getIdMaxValue(conn, it.getTableName())
+                        primaryKeys.put(it, id)
+                    }
+        }
     }
 
     /**
@@ -506,10 +519,9 @@ open class DAO(ds: DataSource?) {
         return primaryKeys.compute(clazz) { _, v -> if (v == null) 1 else v + 1 }!!
     }
 
-    private fun getIdMaxValue(tableName: String): Int {
-        dataSource!!.connection.use { conn ->
-            val st = conn.prepareStatement("SELECT id FROM $tableName ORDER BY id DESC")
-            val rs = st.executeQuery()
+    private fun getIdMaxValue(conn: Connection, tableName: String): Int {
+        conn.prepareStatement("SELECT id FROM $tableName ORDER BY id DESC").use {
+            val rs = it.executeQuery()
             if (rs.next()) {
                 return rs.getInt(1)
             } else {
@@ -519,18 +531,58 @@ open class DAO(ds: DataSource?) {
     }
 
     /**
-     * Inserts new [record] with predefined id into the database. No attempt to generate
+     * Inserts new [record] with predefined id into the database using given [connection][conn]. No attempt to generate
      * new id is made. Calling code must ensure that predefined id is unique.
      */
-    fun <T : Record> insert(record: T): T? {
+    fun <T : Record> insert(conn: Connection, record: T): T? {
         if (record.id == 0) {
             throw IllegalArgumentException("id == 0")
         }
 
+        getPreparedStatement(record, conn, false).use {
+            it.executeUpdate()
+            return get(record.id, record::class)
+        }
+    }
+
+    /**
+     * Inserts new [record] with predefined id into the database. No attempt to generate
+     * new id is made. Calling code must ensure that predefined id is unique.
+     */
+    fun <T : Record> insert(record: T): T? {
         dataSource!!.connection.use {
-            getPreparedStatement(record, it, false).use {
-                it.executeUpdate()
-                return get(record.id, record::class)
+            return insert(it, record)
+        }
+    }
+
+    /**
+     * Inserts multiple [records] with predefined id using batch insert. No attempt to generate
+     * new id is made. Calling code must ensure that predefined id is unique for all records.
+     *
+     * Supplied records are divided to batches of the specified [size]. To avoid memory issues [size] of the batch
+     * must be tuned appropriately.
+     */
+    fun <T : Record> insert(conn: Connection, size: Int, records: List<T>) {
+        if (size < 1) {
+            throw IllegalArgumentException("Batch size must be >= 1")
+        }
+
+        if (!records.isEmpty()) {
+            val sql = getInsertSQL(records[0])
+
+            conn.prepareStatement(sql).use { st ->
+                var count = 0
+
+                for (r in records) {
+                    setData(r, st, false)
+                    st.addBatch()
+
+                    if (++count % size == 0) {
+                        st.executeBatch()
+                    }
+                }
+
+                st.executeBatch()
             }
         }
     }
@@ -543,29 +595,22 @@ open class DAO(ds: DataSource?) {
      * must be tuned appropriately.
      */
     fun <T : Record> insert(size: Int, records: List<T>) {
-        if (size < 1) {
-            throw IllegalArgumentException("Batch size must be >= 1")
+        connection.use { conn ->
+            insert(conn, size, records)
+        }
+    }
+
+    /**
+     * Updates [record] in the database using given [connection][conn].
+     */
+    fun <T : Record> update(conn: Connection, record: T): T? {
+        if (record.id == 0) {
+            throw IllegalArgumentException("id == 0")
         }
 
-        if (!records.isEmpty()) {
-            val sql = getInsertSQL(records[0])
-
-            connection.use { conn ->
-                conn.prepareStatement(sql).use { st ->
-                    var count = 0
-
-                    for (r in records) {
-                        setData(r, st, false)
-                        st.addBatch()
-
-                        if (++count % size == 0) {
-                            st.executeBatch()
-                        }
-                    }
-
-                    st.executeBatch()
-                }
-            }
+        getPreparedStatement(record, conn, true).use {
+            it.executeUpdate()
+            return get(record.id, record::class)!!
         }
     }
 
@@ -573,17 +618,9 @@ open class DAO(ds: DataSource?) {
      * Updates [record] in the database.
      */
     fun <T : Record> update(record: T): T? {
-        if (record.id == 0) {
-            throw IllegalArgumentException("id == 0")
-        }
-
         dataSource!!.connection.use {
-            getPreparedStatement(record, it, true).use {
-                it.executeUpdate()
-                return get(record.id, record::class)!!
-            }
+            return update(it, record)
         }
-
     }
 
     /**
@@ -594,10 +631,8 @@ open class DAO(ds: DataSource?) {
             throw IllegalArgumentException("id == 0")
         }
 
-        dataSource!!.connection.use {
-            conn ->
-            getDeleteStatement(record, conn).use {
-                ps ->
+        dataSource!!.connection.use { conn ->
+            getDeleteStatement(record, conn).use { ps ->
                 ps.executeUpdate()
             }
         }
@@ -611,10 +646,8 @@ open class DAO(ds: DataSource?) {
             throw IllegalArgumentException("id == 0")
         }
 
-        dataSource!!.connection.use {
-            conn ->
-            getDeleteStatement(id, clazz, conn).use {
-                ps ->
+        dataSource!!.connection.use { conn ->
+            getDeleteStatement(id, clazz, conn).use { ps ->
                 ps.executeUpdate()
             }
         }
@@ -631,6 +664,32 @@ open class DAO(ds: DataSource?) {
             for (c in classes) {
                 primaryKeys.put(c, 0)
             }
+        }
+    }
+
+    /**
+     * Resets primary key generation for the given [table]. Next call to [generatePrimaryKey] will return 1. This
+     * method should only be used in case of manual table truncate.
+     */
+    protected fun resetPrimaryKey(table: KClass<out Record>) {
+        primaryKeys.put(table, 0)
+    }
+
+    /**
+     * Deletes all records from the given [table] using [connection][conn].
+     */
+    protected fun deleteAll(table: KClass<out Record>, conn: Connection) {
+        conn.createStatement().use {
+            it.execute("DELETE FROM ${table.getTableName()}")
+        }
+    }
+
+    /**
+     * Deletes all records from the given [table].
+     */
+    fun deleteAll(table: KClass<out Record>) {
+        dataSource!!.connection.use {
+            it.createStatement().execute("DELETE FROM ${table.getTableName()}")
         }
     }
 
